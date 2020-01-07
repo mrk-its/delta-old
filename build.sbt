@@ -18,11 +18,11 @@ name := "delta-core"
 
 organization := "io.delta"
 
-crossScalaVersions := Seq("2.12.8", "2.11.12")
+crossScalaVersions := Seq("2.11.12")
 
 scalaVersion := crossScalaVersions.value.head
 
-sparkVersion := "2.4.2"
+sparkVersion := "2.4.4"
 
 libraryDependencies ++= Seq(
   // Adding test classifier seems to break transitive resolution of the core dependencies
@@ -103,7 +103,7 @@ testScalastyle := scalastyle.in(Test).toTask("").value
 
 def getVersion(version: String): String = {
     version.split("\\.").toList match {
-        case major :: minor :: rest => s"$major.$minor.0" 
+        case major :: minor :: rest => s"$major.$minor.0"
         case _ => throw new Exception(s"Could not find previous version for $version.")
     }
 }
