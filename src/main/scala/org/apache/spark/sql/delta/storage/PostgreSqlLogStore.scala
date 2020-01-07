@@ -35,6 +35,16 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
 import java.sql.{DriverManager, Connection, ResultSet, SQLException}
 
 
+/*
+  Following spark properties needs to be configured:
+   - spark.delta.PostgreSqlLogStore.db_url - db url in form:
+     postgresql://host:port/db_name?user=...&password=...
+   - spark.delta.PostgreSqlLogStore.db_table - name of delta_log db table (defaults to 'delta_log')
+
+  for now manual creation of log table is required:
+  create table delta_log(path text primary key collate "C", length bigint, timestamp_ms bigint);
+*/
+
 class PostgreSqlLogStore (
     sparkConf: SparkConf,
     hadoopConf: Configuration) extends HadoopFileSystemLogStore(sparkConf, hadoopConf)
