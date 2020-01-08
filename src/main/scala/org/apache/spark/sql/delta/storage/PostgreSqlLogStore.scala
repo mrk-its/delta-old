@@ -108,6 +108,69 @@ class PostgreSqlLogStore (
     result.iterator
   }
 
+  private def toPath(path: String) = {
+    if (path != null) {
+        new Path(path)
+    } else {
+        null
+    }
+  }
+
+  private def getDBLog(
+      sql_connection: Connection,
+      parentPath: Path,
+      resolvedPath: Path,
+      isComplete: Boolean
+  ): Iterator[DBFileStatus] = {
+    val stmt = sql_connection.prepareStatement(s"""
+    SELECT path, temp_path, length, timestamp_ms, is_complete
+    FROM $db_table
+    WHERE path LIKE (? || '/%') AND path >= ? AND is_complete = ?
+    """)
+    stmt.setString(1, parentPath.toString())
+    stmt.setString(2, resolvedPath.toString())
+    stmt.setBoolean(3, isComplete)
+    logDebug(stmt.toString())
+    return new RsIterator(stmt.executeQuery()).map(row => {
+        DBFileStatus(
+            toPath(row.getString("path")),
+            toPath(row.getString("temp_path")),
+            row.getLong("length"),
+            row.getLong("timestamp_ms"),
+            row.getBoolean("is_complete")
+        )
+    })
+  }
+
+  private def fixTransactionLog(
+      sql_connection: Connection,
+      fs: FileSystem,
+      parentPath: Path,
+      resolvedPath: Path
+  ) = {
+    sql_connection.setAutoCommit(false)
+    val update_stmt = sql_connection.prepareStatement(s"""
+        UPDATE $db_table
+        SET length=?, timestamp_ms=?, is_complete=true, temp_path=null
+        WHERE path=?
+    """)
+    getDBLog(sql_connection, parentPath, resolvedPath, false)
+    .foreach(item => {
+        logDebug(green_text(s"fixing $item"))
+        // TODO simply copy streams instead copying line by line
+        // and put it outside transaction
+        val length = writeActions(fs, item.path, read(item.tempPath).iterator)
+        update_stmt.setLong(1, length)
+        update_stmt.setLong(2, System.currentTimeMillis())
+        update_stmt.setString(3, item.path.toString())
+        logDebug(update_stmt.toString())
+        update_stmt.executeUpdate()
+        sql_connection.commit()
+        logDebug(s"delete ${item.tempPath}")
+        fs.delete(item.tempPath)
+    })
+  }
+
   private def listFromDB(fs: FileSystem, resolvedPath: Path): Iterator[FileStatus] = {
     val parentPath = resolvedPath.getParent
     if (!fs.exists(parentPath)) {
@@ -115,26 +178,9 @@ class PostgreSqlLogStore (
       throw new FileNotFoundException(s"No such file or directory: $parentPath")
     }
     val sql_connection = getConnection()
+    fixTransactionLog(sql_connection, fs, parentPath, resolvedPath)
     try {
-      val stmt = sql_connection.prepareStatement(s"""
-        SELECT path, length, timestamp_ms
-        FROM $db_table
-        WHERE path LIKE (? || '/%') AND path >= ?
-      """)
-      stmt.setString(1, parentPath.toString())
-      stmt.setString(2, resolvedPath.toString())
-      logDebug(stmt.toString())
-      return new RsIterator(stmt.executeQuery()).map(row => {
-        logDebug(s"item: ${row.getString("path")}")
-        new FileStatus(
-          row.getLong("length"),
-          false,
-          1,
-          fs.getDefaultBlockSize(new Path(row.getString("path"))),
-          row.getLong("timestamp_ms"),
-          new Path(row.getString("path"))
-        )
-      })
+      return getDBLog(sql_connection, parentPath, resolvedPath, true).map(item => item.asFileStatus(fs))
     } catch {
       case e: Throwable => throw new java.nio.file.FileSystemException(e.toString())
     } finally {
@@ -153,13 +199,13 @@ class PostgreSqlLogStore (
     }
 
     val listedFromFs =
-      fs.listStatus(parentPath).filter( path =>
-        (path.getPath.getName >= resolvedPath.getName) && path.getPath.getName.endsWith(".parquet")
-      )
-    // logDebug(s"listedfromFs: ${listedFromFs.toList}")
-    val listedFromDB = listFromDB(fs, resolvedPath)
+      fs.listStatus(parentPath).filter( path => (path.getPath.getName >= resolvedPath.getName) )
+    listedFromFs.iterator.map(entry => s"fs item: ${entry.getPath}").foreach(x => logDebug(x))
 
-    mergeFileIterators(listedFromFs.iterator, listedFromDB)
+    val listedFromDB = listFromDB(fs, resolvedPath).toList
+    listedFromDB.iterator.map(entry => s"db item: ${entry.getPath}").foreach(x => logDebug(x))
+
+    mergeFileIterators(listedFromFs.iterator, listedFromDB.iterator)
   }
 
   /**
@@ -178,63 +224,89 @@ class PostgreSqlLogStore (
     FileNames.isDeltaFile(path) && FileNames.deltaVersion(path) == 0L
   }
 
+  private def writeActions(fs: FileSystem, path: Path, actions: Iterator[String]): Long = {
+    val stream = fs.create(path, true)
+    val countingStream = new CountingOutputStream(stream)
+    actions.map(_ + "\n").map(_.getBytes(UTF_8)).foreach(countingStream.write)
+    stream.close()
+    countingStream.getCount()
+  }
+
+  val RED = "31"
+  val GREEN = "32"
+  private def color_text(text: String, color: String) = s"\u001b[0;${color}m${text}\u001b[m "
+  private def red_text(text: String) = color_text(text, RED)
+  private def green_text(text: String) = color_text(text, GREEN)
+
   override def write(path: Path, actions: Iterator[String], overwrite: Boolean = false): Unit = {
     val (fs, resolvedPath) = resolved(path)
+    val parentPath = resolvedPath.getParent
     val lockedPath = getPathKey(resolvedPath)
     var stream: FSDataOutputStream = null
     logDebug(s"write path: ${path}, ${overwrite}")
     val sql_connection = getConnection()
+
+    if (overwrite) {
+        // TODO - store in db too
+        writeActions(fs, resolvedPath, actions)
+        return
+    }
+
+    val uuid = java.util.UUID.randomUUID().toString
+    val temp_path = new Path(s"$parentPath/temp/$uuid")
+
+    val actions_list = actions.toList
+
+    writeActions(fs, temp_path, actions_list.iterator)
+
     try {
       sql_connection.setAutoCommit(false)
       val insert_stmt = sql_connection.prepareStatement(
-        if (!overwrite) {
-          s"INSERT INTO $db_table(path) VALUES(?)"
-        } else {
-          s"INSERT INTO $db_table(path) VALUES(?) ON CONFLICT(path) DO NOTHING"
-      }
+          s"INSERT INTO $db_table(path, temp_path, is_complete) VALUES(?, ?, false)"
       )
       insert_stmt.setString(1, resolvedPath.toString())
+      insert_stmt.setString(2, temp_path.toString())
       logDebug(insert_stmt.toString())
       insert_stmt.executeUpdate()
-
-      stream = fs.create(resolvedPath, true)
-      val countingStream = new CountingOutputStream(stream)
-      actions.map(_ + "\n").map(_.getBytes(UTF_8)).foreach(countingStream.write)
-      stream.close()
-
-      // When a Delta log starts afresh, all cached files in that Delta log become obsolete,
-      // so we remove them from the cache.
-      if (isInitialVersion(resolvedPath)) {
-      }
-
-      val update_stmt = sql_connection.prepareStatement(s"""
-        UPDATE $db_table
-        SET length=?, timestamp_ms=?
-        WHERE path=?
-      """)
-      update_stmt.setLong(1, countingStream.getCount())
-      update_stmt.setLong(2, System.currentTimeMillis())
-      update_stmt.setString(3, resolvedPath.toString())
-      logDebug(update_stmt.toString())
-      update_stmt.executeUpdate()
       sql_connection.commit()
     } catch {
-      case e: Throwable => { // scalastyle:ignore
-        logError(s"${e.getClass.getName}: $e");
-        if (
-          e.isInstanceOf[SQLException]
-          && e.asInstanceOf[SQLException].getSQLState() == UNIQUE_VIOLATION
-        ) {
-          throw new java.nio.file.FileAlreadyExistsException(resolvedPath.toString())
+        case e: Throwable => { // scalastyle:ignore
+            logError(s"${e.getClass.getName}: $e");
+            if (
+                e.isInstanceOf[SQLException]
+                && e.asInstanceOf[SQLException].getSQLState() == UNIQUE_VIOLATION
+            ) {
+                sql_connection.rollback()
+                fs.delete(temp_path, false)
+                throw new java.nio.file.FileAlreadyExistsException(resolvedPath.toString())
+            }
+            sql_connection.rollback()
+            fs.delete(temp_path, false)
+            throw new java.nio.file.FileSystemException(resolvedPath.toString())
         }
-        if (stream != null) {
-          fs.delete(resolvedPath, false)
-          logDebug(s"removed invalid file: $resolvedPath")
-        }
-        throw new java.nio.file.FileSystemException(resolvedPath.toString())
-      }
+    }
+    assert(scala.util.Random.nextFloat > 0.25, "\u001b[0;31mFAILURE 1 INJECTED\u001b[m ")
+
+    try {
+        assert(scala.util.Random.nextFloat > 0.5, "\u001b[0;31mFAILURE 2 INJECTED\u001b[m ")
+
+        val length = writeActions(fs, resolvedPath, actions_list.iterator)
+        val update_stmt = sql_connection.prepareStatement(s"""
+            UPDATE $db_table
+            SET length=?, timestamp_ms=?, is_complete=true, temp_path=null
+            WHERE path=?
+        """)
+        update_stmt.setLong(1, length)
+        update_stmt.setLong(2, System.currentTimeMillis())
+        update_stmt.setString(3, resolvedPath.toString())
+        logDebug(update_stmt.toString())
+        update_stmt.executeUpdate()
+        sql_connection.commit()
+        fs.delete(temp_path, false)
+    } catch {
+        case e: Throwable => logWarning(e.toString())
     } finally {
-      sql_connection.close()
+        sql_connection.close()
     }
   }
 
@@ -244,10 +316,23 @@ class PostgreSqlLogStore (
   }
 }
 
-object PostgreSqlLogStore {
-}
-
 class RsIterator(rs: ResultSet) extends Iterator[ResultSet] {
-  def hasNext: Boolean = rs.next()
-  def next(): ResultSet = rs
+    def hasNext: Boolean = rs.next()
+    def next(): ResultSet = rs
+  }
+
+/**
+ * The file metadata to be stored in the cache.
+ */
+case class DBFileStatus(path: Path, tempPath: Path, length: Long, modificationTime: Long, isComplete: Boolean) {
+    def asFileStatus(fs: FileSystem) = {
+        new FileStatus(
+            length,
+            false,
+            1,
+            fs.getDefaultBlockSize(path),
+            modificationTime,
+            path
+        )
+    }
 }
