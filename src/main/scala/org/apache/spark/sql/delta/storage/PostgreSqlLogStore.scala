@@ -180,7 +180,8 @@ class PostgreSqlLogStore (
     val sql_connection = getConnection()
     fixTransactionLog(sql_connection, fs, parentPath, resolvedPath)
     try {
-      return getDBLog(sql_connection, parentPath, resolvedPath, true).map(item => item.asFileStatus(fs))
+      return getDBLog(sql_connection, parentPath, resolvedPath, true)
+        .map(item => item.asFileStatus(fs))
     } catch {
       case e: Throwable => throw new java.nio.file.FileSystemException(e.toString())
     } finally {
@@ -285,10 +286,10 @@ class PostgreSqlLogStore (
             throw new java.nio.file.FileSystemException(resolvedPath.toString())
         }
     }
-    assert(scala.util.Random.nextFloat > 0.25, "\u001b[0;31mFAILURE 1 INJECTED\u001b[m ")
+    // assert(scala.util.Random.nextFloat > 0.25, "\u001b[0;31mLLURE 1 INJECTED\u001b[m ")
 
     try {
-        assert(scala.util.Random.nextFloat > 0.5, "\u001b[0;31mFAILURE 2 INJECTED\u001b[m ")
+        // >assert(scala.util.Random.nextFloat > 0.5, "\u001b[0;31mFAILURE 2 INJECTED\u001b[m ")
 
         val length = writeActions(fs, resolvedPath, actions_list.iterator)
         val update_stmt = sql_connection.prepareStatement(s"""
@@ -324,8 +325,14 @@ class RsIterator(rs: ResultSet) extends Iterator[ResultSet] {
 /**
  * The file metadata to be stored in the cache.
  */
-case class DBFileStatus(path: Path, tempPath: Path, length: Long, modificationTime: Long, isComplete: Boolean) {
-    def asFileStatus(fs: FileSystem) = {
+case class DBFileStatus(
+  path: Path,
+  tempPath: Path,
+  length: Long,
+  modificationTime: Long,
+  isComplete: Boolean
+) {
+    def asFileStatus(fs: FileSystem): FileStatus = {
         new FileStatus(
             length,
             false,

@@ -80,7 +80,7 @@ javaOptions in Test ++= Seq(
 /** ********************
  * ScalaStyle settings *
  * *********************/
-/*
+
 scalastyleConfig := baseDirectory.value / "scalastyle-config.xml"
 
 lazy val compileScalastyle = taskKey[Unit]("compileScalastyle")
@@ -94,7 +94,7 @@ lazy val testScalastyle = taskKey[Unit]("testScalastyle")
 testScalastyle := scalastyle.in(Test).toTask("").value
 
 (test in Test) := ((test in Test) dependsOn testScalastyle).value
-*/
+
 /*********************
  *  MIMA settings    *
  *********************/
