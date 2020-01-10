@@ -31,6 +31,8 @@ libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-core" % sparkVersion.value % "provided",
   "org.apache.spark" %% "spark-catalyst" % sparkVersion.value % "provided",
 
+  "com.loopfor.zookeeper" % "zookeeper-client_2.12" % "1.4",
+  "com.amazonaws" % "aws-java-sdk-dynamodb" % "1.11.702",
   // Test deps
   "org.scalatest" %% "scalatest" % "3.0.5" % "test",
   "junit" % "junit" % "4.12" % "test",
