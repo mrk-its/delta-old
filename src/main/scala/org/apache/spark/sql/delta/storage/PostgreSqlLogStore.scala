@@ -37,23 +37,25 @@ import java.sql.{DriverManager, Connection, ResultSet, SQLException}
 
 /*
   Following spark properties needs to be configured:
-   - spark.delta.PostgreSqlLogStore.db_url - db url in form:
+   - spark.delta.PostgreSQLLogStore.db_url - db url in form:
      postgresql://host:port/db_name?user=...&password=...
-   - spark.delta.PostgreSqlLogStore.db_table - name of delta_log db table (defaults to 'delta_log')
+   - spark.delta.PostgreSQLLogStore.db_table - name of delta_log db table (defaults to 'delta_log')
 
   for now manual creation of log table is required:
-  create table delta_log(path text primary key collate "C", length bigint, mtime bigint);
+  create table delta_log(
+    path text primary key collate "C", length bigint, modification_time bigint
+  )
 */
 
-class PostgreSqlLogStore (
+class PostgreSQLLogStore (
     sparkConf: SparkConf,
     hadoopConf: Configuration) extends BaseExternalLogStore(sparkConf, hadoopConf)
 {
 
   val UNIQUE_VIOLATION = "23505"
 
-  val dbUrlConfKey: String = "spark.delta.PostgreSqlLogStore.db_url"
-  val dbTableConfKey: String = "spark.delta.PostgreSqlLogStore.db_table"
+  val dbUrlConfKey: String = "spark.delta.PostgreSQLLogStore.db_url"
+  val dbTableConfKey: String = "spark.delta.PostgreSQLLogStore.db_table"
 
   val db_table: String = sparkConf.get(dbTableConfKey, "delta_log")
   val db_url: String = sparkConf.get(dbUrlConfKey)
@@ -77,7 +79,7 @@ class PostgreSqlLogStore (
   ): Iterator[LogEntry] = {
     val sql_connection = getConnection()
     val stmt = sql_connection.prepareStatement(s"""
-    SELECT path, temp_path, length, mtime, is_complete
+    SELECT path, temp_path, length, modification_time, is_complete
     FROM $db_table
     WHERE path LIKE (? || '/%') AND path >= ?
     """)
@@ -91,7 +93,7 @@ class PostgreSqlLogStore (
             new Path(path),
             Option(row.getString("temp_path")).map(new Path(_)),
             row.getLong("length"),
-            row.getLong("mtime"),
+            row.getLong("modification_time"),
             row.getBoolean("is_complete")
         )
     })
@@ -102,7 +104,7 @@ class PostgreSqlLogStore (
   ): Unit = {
     val sql_connection = getConnection()
     val java_temp_path = if (logEntry.tempPath.isDefined) logEntry.tempPath.get.toString() else null
-    val mtime = System.currentTimeMillis()
+    val modificationTime = System.currentTimeMillis()
     try {
       if (!overwrite) {
         val insert_stmt = sql_connection.prepareStatement(
@@ -120,21 +122,21 @@ class PostgreSqlLogStore (
       } else {
         val insert_stmt = sql_connection.prepareStatement(
           s"""
-          INSERT INTO $db_table(path, temp_path, length, mtime, is_complete)
+          INSERT INTO $db_table(path, temp_path, length, modification_time, is_complete)
           VALUES(?, ?, ?, ?, ?)
           ON CONFLICT(path)
-          DO UPDATE SET temp_path=?, length=?, mtime=?, is_complete=?
+          DO UPDATE SET temp_path=?, length=?, modification_time=?, is_complete=?
           """
         )
         insert_stmt.setString(1, logEntry.path.toString())
         insert_stmt.setString(2, java_temp_path)
         insert_stmt.setLong(3, logEntry.length)
-        insert_stmt.setLong(4, mtime)
+        insert_stmt.setLong(4, modificationTime)
         insert_stmt.setBoolean(5, logEntry.isComplete)
 
         insert_stmt.setString(6, java_temp_path)
         insert_stmt.setLong(7, logEntry.length)
-        insert_stmt.setLong(8, mtime)
+        insert_stmt.setLong(8, modificationTime)
         insert_stmt.setBoolean(9, logEntry.isComplete)
 
         logDebug(color_text(insert_stmt.toString(), YELLOW))

@@ -24,6 +24,7 @@ import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.util.Utils
+// import org.apache.spark.sql.delta.metering.DeltaLogging
 
 /**
  * General interface for all critical file system operations required to read and write the
@@ -96,8 +97,7 @@ trait LogStore {
   def isPartialWriteVisible(path: Path): Boolean = true
 }
 
-object LogStore extends LogStoreProvider
-  with Logging {
+object LogStore extends LogStoreProvider {
 
   def apply(sc: SparkContext): LogStore = {
     apply(sc.getConf, sc.hadoopConfiguration)
