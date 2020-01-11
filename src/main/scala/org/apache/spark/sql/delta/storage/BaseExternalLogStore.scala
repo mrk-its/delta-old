@@ -256,7 +256,12 @@ abstract class BaseExternalLogStore (
   val MAGENTA = "35"
   val CYAN = "36"
 
-  protected def color_text(text: String, color: String) = s"\u001b[0;${color}m${text}\u001b[m "
+  val disableColorLoggingConfKey: String = "spark.delta.LogStore.disableColorLogging"
+  val colorsDisabled = sparkConf.get(disableColorLoggingConfKey, "false").toBoolean
+
+  protected def color_text(text: String, color: String) = {
+    if (colorsDisabled) text else s"\u001b[0;${color}m${text}\u001b[m "
+  }
   protected def red_text(text: String) = color_text(text, RED)
   protected def green_text(text: String) = color_text(text, GREEN)
   logWarning(color_text(s"will inject fails with propabilities: $failPropability", RED))
