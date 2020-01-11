@@ -29,7 +29,7 @@ import java.io.FileNotFoundException
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{Path, FileSystem}
 import org.apache.spark.SparkConf
-
+import com.amazonaws.auth.{BasicAWSCredentials, AWSStaticCredentialsProvider}
 
 class DynamoDBLogStore (
     sparkConf: SparkConf,
@@ -94,10 +94,29 @@ class DynamoDBLogStore (
     })
   }
 
+  val accessKeyConfKey = "spark.delta.DynamoDBLogStore.aws_access_key"
+  val secretKeyConfKey = "spark.delta.DynamoDBLogStore.aws_secret_key"
+  val serviceEndpointConfKey = "spark.delta.DynamoDBLogStore.service_endpoint"
+  val signingRegionConfKey = "spark.delta.DynamoDBLogStore.signing_region"
+
   val client = {
-    val conf =
-        new AwsClientBuilder.EndpointConfiguration("http://localhost:8000", "us-west-2")
-    AmazonDynamoDBClientBuilder.standard().withEndpointConfiguration(conf).build()
+    var conf_builder = AmazonDynamoDBClientBuilder.standard()
+    if (sparkConf.contains(accessKeyConfKey)) {
+        val credentials = new BasicAWSCredentials(
+          sparkConf.get(accessKeyConfKey),
+          sparkConf.get(secretKeyConfKey)
+        )
+        val cred_prod = new AWSStaticCredentialsProvider(credentials)
+        conf_builder = conf_builder.withCredentials(cred_prod)
+    }
+    if (sparkConf.contains(serviceEndpointConfKey)) {
+        val endpointConf = new AwsClientBuilder.EndpointConfiguration(
+          sparkConf.get(serviceEndpointConfKey),
+          sparkConf.get(signingRegionConfKey)
+        )
+        conf_builder = conf_builder.withEndpointConfiguration(endpointConf)
+    }
+    conf_builder.build()
   }
 }
 
