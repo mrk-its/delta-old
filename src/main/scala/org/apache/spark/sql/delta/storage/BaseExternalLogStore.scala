@@ -162,10 +162,16 @@ abstract class BaseExternalLogStore (
         // TODO simply copy streams instead of copying line by line
         // and put it outside transaction
         val tempPath = item.tempPath.get
-        val length = writeActions(fs, item.path, read(tempPath).iterator)
-        putLogEntry(LogEntry(item.path, None, length, System.currentTimeMillis(), true), true)
-        logDebug(color_text(s"delete ${item.tempPath}", BLUE))
-        delete_file(fs, tempPath)
+        try {
+          val length = writeActions(fs, item.path, read(tempPath).iterator)
+          putLogEntry(LogEntry(item.path, None, length, System.currentTimeMillis(), true), true)
+          logDebug(color_text(s"delete ${item.tempPath}", BLUE))
+          delete_file(fs, tempPath)
+        } catch {
+          case e: FileNotFoundException => { // scalastyle:ignore
+            logWarning(s"ignoring $e while fixing (already done?)")
+          }
+        }
     })
   }
 

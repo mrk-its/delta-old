@@ -17,19 +17,27 @@
 package org.apache.spark.sql.delta.storage
 
 import scala.collection.JavaConverters._
-import com.amazonaws.client.builder.AwsClientBuilder
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClientBuilder
+import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient
+import com.amazonaws.auth.profile.ProfileCredentialsProvider
+
 import com.amazonaws.services.dynamodbv2.model.{
   AttributeValue,
   PutItemRequest,
   QueryRequest,
+  Condition,
+  ComparisonOperator,
   ConditionalCheckFailedException}
 import java.io.FileNotFoundException
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{Path, FileSystem}
 import org.apache.spark.SparkConf
-import com.amazonaws.auth.{BasicAWSCredentials, AWSStaticCredentialsProvider}
+import com.amazonaws.auth.BasicAWSCredentials
+import com.amazonaws.services.dynamodbv2.model.Condition
+import com.amazonaws.services.dynamodbv2.model.ExpectedAttributeValue
+import com.amazonaws.regions.Region
+import com.amazonaws.regions.Regions
+// import com.amazonaws.auth.AWSStaticCredentialsProvider
 
 class DynamoDBLogStore (
     sparkConf: SparkConf,
@@ -68,12 +76,15 @@ class DynamoDBLogStore (
     val result = client.query(
         new QueryRequest("delta_log")
         .withConsistentRead(true)
-        .withKeyConditionExpression("parentPath = :path AND filename >= :filename")
-        .withExpressionAttributeValues(
-            Map(
-                ":path" -> new AttributeValue(parentPath.toString()),
-                ":filename" -> new AttributeValue(filename)
-            ).asJava
+        .withKeyConditions(
+          Map(
+            "filename" -> new Condition()
+              .withComparisonOperator(ComparisonOperator.GE)
+              .withAttributeValueList(new AttributeValue(filename)),
+            "parentPath" -> new Condition()
+              .withComparisonOperator(ComparisonOperator.EQ)
+              .withAttributeValueList(new AttributeValue(parentPath.toString()))
+          ).asJava
         )
     ).getItems().asScala
     result.iterator.map( item => {
@@ -83,7 +94,7 @@ class DynamoDBLogStore (
       val tempPath = Option(item.get("tempPath").getS()).map(new Path(_))
       val length = item.get("length").getN().toLong
       val modificationTime = item.get("modificationTime").getN().toLong
-      val isComplete = item.get("isComplete").getBOOL()
+      val isComplete = Option(item.get("isComplete").getS()).map(_.toBoolean).getOrElse(false)
       LogEntry(
           path = new Path(s"$parentPath/$filename"),
           tempPath = tempPath,
@@ -100,23 +111,14 @@ class DynamoDBLogStore (
   val signingRegionConfKey = "spark.delta.DynamoDBLogStore.signing_region"
 
   val client = {
-    var conf_builder = AmazonDynamoDBClientBuilder.standard()
-    if (sparkConf.contains(accessKeyConfKey)) {
-        val credentials = new BasicAWSCredentials(
-          sparkConf.get(accessKeyConfKey),
-          sparkConf.get(secretKeyConfKey)
-        )
-        val cred_prod = new AWSStaticCredentialsProvider(credentials)
-        conf_builder = conf_builder.withCredentials(cred_prod)
+    val credentials = if (sparkConf.contains(accessKeyConfKey)) {
+      new BasicAWSCredentials(sparkConf.get(accessKeyConfKey), sparkConf.get(secretKeyConfKey))
+    } else {
+      new ProfileCredentialsProvider().getCredentials()
     }
-    if (sparkConf.contains(serviceEndpointConfKey)) {
-        val endpointConf = new AwsClientBuilder.EndpointConfiguration(
-          sparkConf.get(serviceEndpointConfKey),
-          sparkConf.get(signingRegionConfKey)
-        )
-        conf_builder = conf_builder.withEndpointConfiguration(endpointConf)
-    }
-    conf_builder.build()
+    val client = new AmazonDynamoDBClient(credentials)
+    client.setRegion(Region.getRegion(Regions.US_WEST_2))
+    client
   }
 }
 
@@ -131,14 +133,18 @@ case class LogEntryWrapper(entry: LogEntry) {
       Map(
           "parentPath" -> new AttributeValue(entry.path.getParent().toString()),
           "filename" -> new AttributeValue(entry.path.getName()),
-          "tempPath" -> (entry.tempPath
+          "tempPath" -> (
+            entry.tempPath
             .map(path => new AttributeValue(path.toString))
-            .getOrElse(new AttributeValue().withNULL(true))),
+            .getOrElse(new AttributeValue().withN("0"))
+          ),
           "length" -> new AttributeValue().withN(entry.length.toString),
           "modificationTime" -> new AttributeValue().withN(System.currentTimeMillis().toString()),
-          "isComplete" ->  new AttributeValue().withBOOL(entry.isComplete)
+          "isComplete" ->  new AttributeValue().withS(entry.isComplete.toString)
       ).asJava
     )
-    if (!overwrite) pr.withConditionExpression("attribute_not_exists(filename)") else pr
+    if (!overwrite) {
+      pr.withExpected(Map("filename" -> new ExpectedAttributeValue(false)).asJava)
+    } else pr
   }
 }

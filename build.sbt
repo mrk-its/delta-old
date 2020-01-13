@@ -19,7 +19,6 @@ name := "delta-core"
 organization := "io.delta"
 
 crossScalaVersions := Seq("2.11.12")
-
 scalaVersion := crossScalaVersions.value.head
 
 sparkVersion := "2.4.4"
@@ -31,10 +30,8 @@ libraryDependencies ++= Seq(
   "org.apache.spark" %% "spark-core" % sparkVersion.value % "provided",
   "org.apache.spark" %% "spark-catalyst" % sparkVersion.value % "provided",
 
-  "com.loopfor.zookeeper" % "zookeeper-client_2.12" % "1.4",
-  "com.amazonaws" % "aws-java-sdk-dynamodb" % "1.11.703",
-  // "com.amazonaws" % "aws-java-sdk-dynamodb" % "1.10.77",
-  "com.amazonaws" % "aws-java-sdk-core" % "1.11.703",
+  "com.amazonaws" % "aws-java-sdk" % "1.7.4",
+  // "com.loopfor.zookeeper" % "zookeeper-client_2.12" % "1.4",
   // Test deps
   "org.scalatest" %% "scalatest" % "3.0.5" % "test",
   "junit" % "junit" % "4.12" % "test",
